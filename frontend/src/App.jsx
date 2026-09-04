@@ -40,6 +40,8 @@ export default function App() {
   const [whatIfResult, setWhatIfResult] = useState(null);
   const [batchSimResult, setBatchSimResult] = useState(null);
   const [runningBatchSim, setRunningBatchSim] = useState(false);
+  const [isApplyingPolicy, setIsApplyingPolicy] = useState(false);
+  const [policyAppliedMsg, setPolicyAppliedMsg] = useState('');
 
   // Custom Simulation Range & Capacity Modal
   const [showSimModal, setShowSimModal] = useState(false);
@@ -227,7 +229,12 @@ export default function App() {
       const params = new URLSearchParams({
         start_rank: start,
         end_rank: end,
-        capacity: cap
+        capacity: cap,
+        high_value_threshold: simParams.highValueThreshold,
+        confidence_threshold: simParams.confidenceThreshold,
+        max_attempts: simParams.maxAttempts,
+        max_discount_pct: simParams.maxDiscountPct,
+        budget_increase_pct: simParams.budgetIncrease,
       });
 
       const res = await fetch(`/api/v1/simulation/run?${params}`, { method: 'POST' });
@@ -241,6 +248,33 @@ export default function App() {
     } catch (err) {
       console.error("Failed batch simulation", err);
       setRunningBatchSim(false);
+    }
+  };
+
+  const handleApplyPolicy = async () => {
+    setIsApplyingPolicy(true);
+    try {
+      const params = new URLSearchParams({
+        confidence_threshold: simParams.confidenceThreshold,
+        high_value_threshold: simParams.highValueThreshold,
+        max_attempts: simParams.maxAttempts,
+        max_discount_pct: simParams.maxDiscountPct,
+        budget_increase_pct: simParams.budgetIncrease,
+      });
+      const res = await fetch(`/api/v1/strategy/apply?${params}`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      setPolicyAppliedMsg(data.message || 'Strategy policy applied and queue re-aligned!');
+      await handleWhatIfCalc();
+      await fetchDashboardData();
+      await fetchOpportunities(1, pageSize);
+      await fetchAuditLogs();
+      setTimeout(() => setPolicyAppliedMsg(''), 5000);
+    } catch (err) {
+      console.error("Failed to apply strategy policy", err);
+    } finally {
+      setIsApplyingPolicy(false);
     }
   };
 
@@ -827,8 +861,20 @@ export default function App() {
                     <span>What-If Strategy Simulator</span>
                   </h2>
                   <p className="text-xs text-slate-400 mt-1">
-                    Adjust recovery policy parameters to project financial outcomes.
+                    Adjust recovery policy parameters to project financial outcomes and apply them to live guardrails.
                   </p>
+                </div>
+
+                {/* Active Guardrail Indicator */}
+                <div className="flex items-center justify-between text-xs px-3.5 py-2.5 rounded-xl bg-slate-900/90 border border-slate-800">
+                  <div className="flex items-center space-x-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span className="text-slate-400">Live Active Threshold:</span>
+                  </div>
+                  <span className="font-mono font-bold text-emerald-400">
+                    ₹{(kpis?.active_policy?.high_value_threshold || 50000).toLocaleString('en-IN')}
+                    <span className="text-slate-500 font-normal ml-1.5">({kpis?.escalated_count ?? 0} escalated)</span>
+                  </span>
                 </div>
 
                 <div className="space-y-4">
@@ -851,7 +897,7 @@ export default function App() {
                       <span className="text-indigo-400 font-mono">{(simParams.confidenceThreshold * 100).toFixed(0)}%</span>
                     </div>
                     <input 
-                      type="range" min="20" max="90" step="5"
+                      type="range" min="20" max="90" step="5" 
                       value={simParams.confidenceThreshold * 100}
                       onChange={(e) => setSimParams({...simParams, confidenceThreshold: Number(e.target.value) / 100})}
                       className="w-full accent-indigo-500"
@@ -884,12 +930,42 @@ export default function App() {
                     />
                   </div>
 
-                  <button
-                    onClick={handleWhatIfCalc}
-                    className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl transition shadow-lg shadow-indigo-600/20"
-                  >
-                    Calculate Projected Uplift
-                  </button>
+                  {/* Dual Action Buttons */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                    <button
+                      onClick={handleWhatIfCalc}
+                      className="py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl border border-slate-700 transition flex items-center justify-center space-x-1.5"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>Forecast Uplift</span>
+                    </button>
+
+                    <button
+                      onClick={handleApplyPolicy}
+                      disabled={isApplyingPolicy}
+                      className="py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl transition shadow-lg shadow-indigo-600/20 disabled:opacity-50 flex items-center justify-center space-x-1.5"
+                      title="Apply this threshold to system guardrails and re-evaluate pending opportunities in the database"
+                    >
+                      {isApplyingPolicy ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Applying to Queue...</span>
+                        </>
+                      ) : (
+                        <>
+                          <ShieldCheck className="w-3.5 h-3.5 text-emerald-300" />
+                          <span>Apply Policy to System</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {policyAppliedMsg && (
+                    <div className="p-3 bg-emerald-950/40 border border-emerald-500/30 rounded-xl text-xs text-emerald-300 flex items-center space-x-2 animate-fadeIn">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>{policyAppliedMsg}</span>
+                    </div>
+                  )}
                 </div>
 
                 {whatIfResult && (
@@ -917,6 +993,15 @@ export default function App() {
                       <span className="text-slate-500">Escalated Events:</span>
                       <span className="text-slate-300">{whatIfResult.base_escalated_events} → {whatIfResult.projected_escalated_events}</span>
                     </div>
+
+                    <button
+                      onClick={handleApplyPolicy}
+                      disabled={isApplyingPolicy}
+                      className="w-full mt-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg transition shadow-md shadow-emerald-600/20 flex items-center justify-center space-x-1.5 disabled:opacity-50"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Commit Strategy (Apply & Re-Align Queue)</span>
+                    </button>
                   </div>
                 )}
               </div>
@@ -1070,7 +1155,9 @@ export default function App() {
                   <ShieldCheck className="w-4 h-4" />
                   <span>Human Operations Escalation Desk</span>
                 </h2>
-                <p className="text-xs text-slate-400">Opportunities flagged by Guardrails (high-value ≥ ₹50,000 or low model confidence &lt; 60%)</p>
+                <p className="text-xs text-slate-400">
+                  Opportunities flagged by Guardrails (high-value ≥ ₹{(kpis?.active_policy?.high_value_threshold || 50000).toLocaleString('en-IN')} or low model confidence &lt; {((kpis?.active_policy?.min_confidence_threshold || 0.6) * 100).toFixed(0)}%)
+                </p>
               </div>
               <span className="text-xs text-rose-300 font-mono bg-rose-500/10 border border-rose-500/20 px-3 py-1 rounded-lg">
                 {totalCount > 0 
@@ -1099,7 +1186,7 @@ export default function App() {
                           <div className="text-[10px] text-slate-500 font-mono">{opp.event_id}</div>
                         </div>
                         <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/30">
-                          {opp.amount >= 50000 ? 'HIGH VALUE' : 'LOW CONFIDENCE'} / REVIEW
+                          {opp.amount >= (kpis?.active_policy?.high_value_threshold || 50000) ? 'HIGH VALUE' : 'LOW CONFIDENCE'} / REVIEW
                         </span>
                       </div>
 

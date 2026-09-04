@@ -91,10 +91,46 @@ class GuardrailPolicyEngine:
     MAX_DISCOUNT_PCT = settings.MAX_DISCOUNT_PCT
     MAX_DISCOUNT_CAP = settings.MAX_DISCOUNT_CAP
     MIN_CONFIDENCE_THRESHOLD = settings.MIN_CONFIDENCE_THRESHOLD
+    BUDGET_INCREASE_PCT = 0.0
 
     @classmethod
-    def evaluate(cls, event_data: Dict, score_data: Dict, customer_data: Dict, proposed_action: str, discount_amount: float = 0.0) -> Dict[str, Any]:
+    def update_policy(
+        cls, 
+        high_value: Optional[float] = None, 
+        confidence: Optional[float] = None, 
+        max_attempts: Optional[int] = None, 
+        max_discount: Optional[float] = None, 
+        budget_increase: Optional[float] = None
+    ):
+        if high_value is not None:
+            cls.HIGH_VALUE_THRESHOLD = float(high_value)
+        if confidence is not None:
+            cls.MIN_CONFIDENCE_THRESHOLD = float(confidence)
+        if max_attempts is not None:
+            cls.MAX_ATTEMPTS_PER_EVENT = int(max_attempts)
+        if max_discount is not None:
+            cls.MAX_DISCOUNT_PCT = float(max_discount)
+        if budget_increase is not None:
+            cls.BUDGET_INCREASE_PCT = float(budget_increase)
+
+    @classmethod
+    def evaluate(
+        cls, 
+        event_data: Dict, 
+        score_data: Dict, 
+        customer_data: Dict, 
+        proposed_action: str, 
+        discount_amount: float = 0.0,
+        custom_thresholds: Optional[Dict] = None
+    ) -> Dict[str, Any]:
         violations = []
+        
+        thresholds = custom_thresholds or {}
+        high_val = float(thresholds.get("high_value_threshold", cls.HIGH_VALUE_THRESHOLD))
+        min_conf = float(thresholds.get("confidence_threshold", cls.MIN_CONFIDENCE_THRESHOLD))
+        max_attempts = int(thresholds.get("max_attempts", cls.MAX_ATTEMPTS_PER_EVENT))
+        max_disc_pct = float(thresholds.get("max_discount_pct", cls.MAX_DISCOUNT_PCT))
+        max_disc_cap = cls.MAX_DISCOUNT_CAP
         
         amount = float(event_data.get("amount", 0))
         previous_attempts = int(event_data.get("previous_recovery_attempts", 0))
@@ -103,9 +139,9 @@ class GuardrailPolicyEngine:
         opt_out = bool(customer_data.get("opt_out_marketing", False))
         
         # Rule 1: High Value Threshold
-        if amount >= cls.HIGH_VALUE_THRESHOLD and proposed_action != "HUMAN_ESCALATION":
+        if amount >= high_val and proposed_action != "HUMAN_ESCALATION":
             violations.append(
-                f"Transaction value ₹{amount:,.2f} exceeds high-value threshold (₹{cls.HIGH_VALUE_THRESHOLD:,.2f}). "
+                f"Transaction value ₹{amount:,.2f} exceeds high-value threshold (₹{high_val:,.2f}). "
                 f"Human escalation required."
             )
             
@@ -114,29 +150,29 @@ class GuardrailPolicyEngine:
             violations.append("Customer has opted out of communications. Autonomous contact forbidden.")
             
         # Rule 3: Attempt Limit
-        if previous_attempts >= cls.MAX_ATTEMPTS_PER_EVENT and proposed_action not in ["HUMAN_ESCALATION", "NO_ACTION"]:
+        if previous_attempts >= max_attempts and proposed_action not in ["HUMAN_ESCALATION", "NO_ACTION"]:
             violations.append(
                 f"Previous recovery attempts ({previous_attempts}) reached maximum threshold "
-                f"({cls.MAX_ATTEMPTS_PER_EVENT})."
+                f"({max_attempts})."
             )
             
         # Rule 4: Low Confidence Threshold
-        if confidence < cls.MIN_CONFIDENCE_THRESHOLD and proposed_action not in ["HUMAN_ESCALATION", "NO_ACTION"]:
+        if confidence < min_conf and proposed_action not in ["HUMAN_ESCALATION", "NO_ACTION"]:
             violations.append(
                 f"Model prediction confidence ({confidence*100:.0f}%) is below minimum threshold "
-                f"({cls.MIN_CONFIDENCE_THRESHOLD*100:.0f}%)."
+                f"({min_conf*100:.0f}%)."
             )
         
         # Rule 5: Discount Cap Enforcement
         if discount_amount > 0:
-            if amount > 0 and (discount_amount / amount * 100) > cls.MAX_DISCOUNT_PCT:
+            if amount > 0 and (discount_amount / amount * 100) > max_disc_pct:
                 violations.append(
                     f"Discount {discount_amount/amount*100:.1f}% exceeds maximum allowed "
-                    f"({cls.MAX_DISCOUNT_PCT}%)."
+                    f"({max_disc_pct}%)."
                 )
-            if discount_amount > cls.MAX_DISCOUNT_CAP:
+            if discount_amount > max_disc_cap:
                 violations.append(
-                    f"Discount ₹{discount_amount:,.2f} exceeds absolute cap (₹{cls.MAX_DISCOUNT_CAP:,.2f})."
+                    f"Discount ₹{discount_amount:,.2f} exceeds absolute cap (₹{max_disc_cap:,.2f})."
                 )
         
         # Rule 6: Economic Viability
@@ -148,14 +184,27 @@ class GuardrailPolicyEngine:
 
         passed = len(violations) == 0
         
-        # Determine fallback action
+        # Determine final approved action
         if not passed:
-            if amount >= cls.HIGH_VALUE_THRESHOLD or confidence < cls.MIN_CONFIDENCE_THRESHOLD:
+            if amount >= high_val or confidence < min_conf:
                 final_action = "HUMAN_ESCALATION"
             else:
                 final_action = "NO_ACTION"
         else:
-            final_action = proposed_action
+            if amount >= high_val:
+                final_action = "HUMAN_ESCALATION"
+            elif proposed_action == "HUMAN_ESCALATION":
+                failure_reason = str(event_data.get("failure_reason", ""))
+                if failure_reason == "expired_card":
+                    final_action = "ALTERNATIVE_PAYMENT_METHOD"
+                elif failure_reason == "bank_timeout":
+                    final_action = "PAYMENT_RETRY"
+                elif amount > 5000 and confidence < 0.60:
+                    final_action = "SMALL_INCENTIVE"
+                else:
+                    final_action = "PAYMENT_LINK"
+            else:
+                final_action = proposed_action
         
         return {
             "passed": passed,
@@ -568,7 +617,7 @@ async def seed_database_impl():
         # On Reset: Every opportunity starts in its pre-recovery state (0 recovered initially)
         # 1. High-value transactions (>= ₹50,000) trigger guardrail -> ESCALATED (human manager review)
         # 2. Autonomous recovery eligible (< ₹50,000) -> DETECTED (pending automated recovery action/simulation)
-        if amount >= settings.HIGH_VALUE_THRESHOLD:
+        if amount >= GuardrailPolicyEngine.HIGH_VALUE_THRESHOLD:
             initial_status = "ESCALATED"
         else:
             initial_status = "DETECTED"
@@ -616,7 +665,7 @@ async def seed_database_impl():
             "reasoning": (
                 f"Detected {row['event_type']} of ₹{amount:,.2f}. "
                 f"P(Recovery)={score_data['p_recovery']:.1%}, Score={score_data['recovery_opportunity_score']}. "
-                f"{'Auto-escalated: transaction amount >= ₹50,000 threshold.' if initial_status == 'ESCALATED' else ''}"
+                f"{'Auto-escalated: transaction amount >= ₹' + f'{GuardrailPolicyEngine.HIGH_VALUE_THRESHOLD:,.0f}' + ' threshold.' if initial_status == 'ESCALATED' else ''}"
             ),
             "policy_passed": initial_status != "ESCALATED",
             "model_version": MODEL_VERSION,
@@ -730,7 +779,14 @@ async def get_dashboard_kpis():
             "escalated_count": escalated_count,
             "intervention_breakdown": breakdown,
             "event_type_breakdown": type_breakdown,
-            "model_version": MODEL_VERSION
+            "model_version": MODEL_VERSION,
+            "active_policy": {
+                "high_value_threshold": GuardrailPolicyEngine.HIGH_VALUE_THRESHOLD,
+                "min_confidence_threshold": GuardrailPolicyEngine.MIN_CONFIDENCE_THRESHOLD,
+                "max_recovery_attempts": GuardrailPolicyEngine.MAX_ATTEMPTS_PER_EVENT,
+                "max_discount_pct": GuardrailPolicyEngine.MAX_DISCOUNT_PCT,
+                "budget_increase_pct": GuardrailPolicyEngine.BUDGET_INCREASE_PCT,
+            }
         }
         _dashboard_cache = result
         _dashboard_cache_time = now
@@ -1129,19 +1185,29 @@ async def run_batch_simulation(
     end_rank: Optional[int] = Query(None, ge=1),
     capacity: Optional[int] = Query(None, ge=1),
     batch_size: Optional[int] = Query(None),
+    high_value_threshold: Optional[float] = Query(None),
+    confidence_threshold: Optional[float] = Query(None),
+    max_attempts: Optional[int] = Query(None),
+    max_discount_pct: Optional[float] = Query(None),
+    budget_increase_pct: Optional[float] = Query(None),
 ):
     """Runs a recovery simulation across a custom range and capacity of opportunities.
     
-    Examples:
-    - start_rank=1, end_rank=100, capacity=50: Runs on 50 opportunities from the top 100 range.
-    - start_rank=101, end_rank=200, capacity=50: Runs on 50 opportunities from the 101-200 range.
-    - default: Evaluates all 1,000 opportunities.
+    Uses dynamic strategy parameters if provided, otherwise active system guardrails.
     """
     cfg = config or SimulationRunConfig()
     eff_start = start_rank if start_rank is not None else (cfg.start_rank or 1)
     eff_end = end_rank if end_rank is not None else (cfg.end_rank or 1000)
     eff_capacity = capacity if capacity is not None else cfg.capacity
     eff_batch_size = batch_size if batch_size is not None else cfg.batch_size
+
+    custom_guardrails = {
+        "high_value_threshold": high_value_threshold if high_value_threshold is not None else GuardrailPolicyEngine.HIGH_VALUE_THRESHOLD,
+        "confidence_threshold": confidence_threshold if confidence_threshold is not None else GuardrailPolicyEngine.MIN_CONFIDENCE_THRESHOLD,
+        "max_attempts": max_attempts if max_attempts is not None else GuardrailPolicyEngine.MAX_ATTEMPTS_PER_EVENT,
+        "max_discount_pct": max_discount_pct if max_discount_pct is not None else GuardrailPolicyEngine.MAX_DISCOUNT_PCT,
+    }
+    eff_budget = budget_increase_pct if budget_increase_pct is not None else GuardrailPolicyEngine.BUDGET_INCREASE_PCT
     
     start_idx = max(1, eff_start)
     end_idx = max(start_idx, eff_end)
@@ -1199,18 +1265,25 @@ async def run_batch_simulation(
         }
         customer_data = {"opt_out_marketing": customer.opt_out_marketing}
         
-        guardrail = GuardrailPolicyEngine.evaluate(event_data, score_data, customer_data, score.recommended_intervention)
+        guardrail = GuardrailPolicyEngine.evaluate(
+            event_data, score_data, customer_data, score.recommended_intervention,
+            custom_thresholds=custom_guardrails
+        )
         action = guardrail["approved_action"]
         action_counts[action] = action_counts.get(action, 0) + 1
         
-        # Simulate recovery based on P(Recovery)
+        # Simulate recovery based on P(Recovery) with budget uplift
         if guardrail["passed"] and action not in ["NO_ACTION", "HUMAN_ESCALATION"]:
             events_automated += 1
             cost = dec(score.intervention_cost)
             total_cost += cost
             
+            p_rec = score.p_recovery
+            if eff_budget > 0:
+                p_rec = min(0.99, p_rec * (1 + eff_budget / 100 * 0.15))
+
             # Probability-based recovery outcome
-            if np.random.uniform(0, 1) <= score.p_recovery:
+            if np.random.uniform(0, 1) <= p_rec:
                 recovered_ids.append(event.event_id)
                 recovered_amount += dec(event.amount)
                 
@@ -1348,8 +1421,8 @@ async def what_if_scenario(
         erv = dec(score.expected_recoverable_value)
         amount = dec(event.amount)
         
-        # Base scenario (current policy)
-        if amount < settings.HIGH_VALUE_THRESHOLD and score.confidence >= settings.MIN_CONFIDENCE_THRESHOLD and event.previous_recovery_attempts < settings.MAX_RECOVERY_ATTEMPTS:
+        # Base scenario (current active policy)
+        if amount < GuardrailPolicyEngine.HIGH_VALUE_THRESHOLD and score.confidence >= GuardrailPolicyEngine.MIN_CONFIDENCE_THRESHOLD and event.previous_recovery_attempts < GuardrailPolicyEngine.MAX_ATTEMPTS_PER_EVENT:
             base_recoverable += erv
             base_automated += 1
         else:
@@ -1381,6 +1454,102 @@ async def what_if_scenario(
             "max_attempts": max_attempts,
             "max_discount_pct": max_discount_pct,
             "budget_increase_pct": budget_increase_pct,
+        }
+    }
+
+
+@app.post("/api/v1/strategy/apply")
+async def apply_strategy_policy(
+    confidence_threshold: float = 0.60,
+    high_value_threshold: float = 50000.0,
+    max_attempts: int = 2,
+    max_discount_pct: float = 5.0,
+    budget_increase_pct: float = 0.0,
+):
+    """Applies modified strategy policy parameters to live system guardrails and 
+    re-evaluates all pending events in the opportunity queue.
+    """
+    GuardrailPolicyEngine.update_policy(
+        high_value=high_value_threshold,
+        confidence=confidence_threshold,
+        max_attempts=max_attempts,
+        max_discount=max_discount_pct,
+        budget_increase=budget_increase_pct,
+    )
+
+    # Query all pending events (status in DETECTED or ESCALATED)
+    pending_events = await prisma.recoveryevent.find_many(
+        where={"status": {"in": ["DETECTED", "ESCALATED"]}},
+        include={"scores": True, "customer": True}
+    )
+
+    new_escalated_ids = []
+    new_detected_ids = []
+
+    for event in pending_events:
+        score = event.scores
+        customer = event.customer
+        if not score or not customer:
+            continue
+
+        event_data = {
+            "amount": dec(event.amount),
+            "previous_recovery_attempts": event.previous_recovery_attempts,
+        }
+        score_data = {
+            "confidence": score.confidence,
+            "expected_recoverable_value": dec(score.expected_recoverable_value),
+            "recommended_intervention": score.recommended_intervention,
+            "economically_viable": score.economically_viable,
+        }
+        customer_data = {"opt_out_marketing": customer.opt_out_marketing}
+
+        guardrail = GuardrailPolicyEngine.evaluate(
+            event_data, score_data, customer_data, score.recommended_intervention
+        )
+        if guardrail["approved_action"] == "HUMAN_ESCALATION":
+            new_escalated_ids.append(event.event_id)
+        else:
+            new_detected_ids.append(event.event_id)
+
+    if new_escalated_ids:
+        await prisma.query_raw(
+            'UPDATE "RecoveryEvent" SET status = \'ESCALATED\'::"EventStatus" WHERE event_id = ANY($1::text[])',
+            new_escalated_ids
+        )
+    if new_detected_ids:
+        await prisma.query_raw(
+            'UPDATE "RecoveryEvent" SET status = \'DETECTED\'::"EventStatus" WHERE event_id = ANY($1::text[])',
+            new_detected_ids
+        )
+
+    await prisma.auditlog.create(
+        data={
+            "step_name": "POLICY_UPDATED",
+            "actor": "GUARDRAIL_ENGINE",
+            "reasoning": (
+                f"Strategy policy applied: Escalation Threshold = ₹{high_value_threshold:,.0f}, "
+                f"Min Confidence = {confidence_threshold:.0%}, Max Attempts = {max_attempts}. "
+                f"Re-aligned pending queue: {len(new_escalated_ids)} human escalations, {len(new_detected_ids)} autonomous queue."
+            ),
+            "policy_passed": True,
+            "model_version": MODEL_VERSION,
+        }
+    )
+
+    invalidate_dashboard_cache()
+
+    return {
+        "status": "SUCCESS",
+        "message": f"Applied strategy: Escalation threshold ₹{high_value_threshold:,.0f}. {len(new_escalated_ids)} events escalated, {len(new_detected_ids)} autonomous.",
+        "escalated_count": len(new_escalated_ids),
+        "detected_count": len(new_detected_ids),
+        "active_policy": {
+            "high_value_threshold": GuardrailPolicyEngine.HIGH_VALUE_THRESHOLD,
+            "min_confidence_threshold": GuardrailPolicyEngine.MIN_CONFIDENCE_THRESHOLD,
+            "max_recovery_attempts": GuardrailPolicyEngine.MAX_ATTEMPTS_PER_EVENT,
+            "max_discount_pct": GuardrailPolicyEngine.MAX_DISCOUNT_PCT,
+            "budget_increase_pct": GuardrailPolicyEngine.BUDGET_INCREASE_PCT,
         }
     }
 
