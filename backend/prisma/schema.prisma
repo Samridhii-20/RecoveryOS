@@ -1,0 +1,221 @@
+// ==================================================
+// RecoveryOS — Prisma Schema (Neon PostgreSQL)
+// ==================================================
+// Run `prisma generate` to generate the Python client.
+// Run `prisma db push` to sync schema to Neon database.
+// ==================================================
+
+generator client {
+  provider                    = "prisma-client-py"
+  interface                   = "asyncio"
+  recursive_type_depth        = 5
+  enable_experimental_decimal = true
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------
+// ENUMS
+// ---------------------------------------------------------
+
+enum EventType {
+  FAILED_CHECKOUT_PAYMENT
+  FAILED_RECURRING_SUBSCRIPTION
+  OVERDUE_INVOICE
+  ABANDONED_CHECKOUT
+}
+
+enum EventStatus {
+  DETECTED
+  ANALYZED
+  INTERVENTION_PENDING
+  EXECUTED
+  ESCALATED
+  RECOVERED
+  FAILED_RECOVERY
+  NO_ACTION
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum InterventionType {
+  PAYMENT_LINK
+  ALTERNATIVE_PAYMENT_METHOD
+  PAYMENT_RETRY
+  REMINDER
+  SMALL_INCENTIVE
+  HUMAN_ESCALATION
+  NO_ACTION
+}
+
+enum Actor {
+  ML_ENGINE
+  SCORING_ENGINE
+  AI_AGENT
+  GUARDRAIL_ENGINE
+  RAZORPAY_API
+  HUMAN_OPERATOR
+  LLM_AGENT
+  SYSTEM
+}
+
+// ---------------------------------------------------------
+// MODELS
+// ---------------------------------------------------------
+
+model Merchant {
+  merchant_id                   String    @id
+  name                          String
+  email                         String
+  recovery_budget_monthly       Decimal   @db.Decimal(12, 2) @default(25000.00)
+  max_discount_pct              Float     @default(5.0)
+  high_value_escalation_threshold Decimal @db.Decimal(12, 2) @default(50000.00)
+  created_at                    DateTime  @default(now())
+
+  customers                     Customer[]
+}
+
+model Customer {
+  customer_id                   String    @id
+  merchant_id                   String
+  name                          String
+  email                         String
+  phone                         String    @default("")
+  account_age_days              Int       @default(30)
+  total_orders_count            Int       @default(1)
+  successful_payments_count     Int       @default(1)
+  failed_payments_count         Int       @default(0)
+  lifetime_value                Decimal   @db.Decimal(14, 2) @default(0.00)
+  preferred_payment_method      String    @default("upi")
+  opt_out_marketing             Boolean   @default(false)
+  created_at                    DateTime  @default(now())
+
+  merchant                      Merchant  @relation(fields: [merchant_id], references: [merchant_id], onDelete: Cascade)
+  events                        RecoveryEvent[]
+
+  @@index([merchant_id])
+}
+
+model RecoveryEvent {
+  event_id                      String      @id
+  merchant_id                   String
+  customer_id                   String
+  customer_name                 String
+  event_type                    EventType
+  amount                        Decimal     @db.Decimal(12, 2)
+  currency                      String      @default("INR")
+  payment_method                String
+  failure_reason                String
+  urgency_hours                 Float       @default(24.0)
+  previous_recovery_attempts    Int         @default(0)
+  status                        EventStatus @default(DETECTED)
+  timestamp                     DateTime    @default(now())
+
+  customer                      Customer          @relation(fields: [customer_id], references: [customer_id], onDelete: Cascade)
+  scores                        RecoveryScore?
+  interventions                 Intervention[]
+  audit_logs                    AuditLog[]
+  model_inferences              ModelInference[]
+
+  @@index([customer_id])
+  @@index([status])
+  @@index([event_type])
+  @@index([merchant_id])
+}
+
+model RecoveryScore {
+  score_id                      String    @id @default(cuid())
+  event_id                      String    @unique
+  p_recovery                    Float
+  margin_pct                    Float
+  intervention_cost             Decimal   @db.Decimal(10, 2)
+  gross_expected_recovery       Decimal   @db.Decimal(12, 2) @default(0.00)
+  expected_recoverable_value    Decimal   @db.Decimal(12, 2)
+  expected_roi                  Float
+  urgency_score                 Float
+  recovery_opportunity_score    Float
+  recommended_intervention      String
+  risk_level                    RiskLevel
+  confidence                    Float
+  economically_viable           Boolean   @default(true)
+  model_version                 String    @default("recovery-v1.0")
+  created_at                    DateTime  @default(now())
+
+  event                         RecoveryEvent @relation(fields: [event_id], references: [event_id], onDelete: Cascade)
+
+  @@index([recovery_opportunity_score(sort: Desc)])
+  @@index([risk_level])
+}
+
+model Intervention {
+  intervention_id               String    @id @default(cuid())
+  event_id                      String
+  intervention_type             String
+  channel                       String    @default("whatsapp")
+  discount_amount               Decimal   @db.Decimal(10, 2) @default(0.00)
+  razorpay_payment_link_id      String?
+  razorpay_short_url            String?
+  status                        String    @default("CREATED")
+  cost                          Decimal   @db.Decimal(10, 2) @default(1.50)
+  reasoning                     String?
+  executed_at                   DateTime  @default(now())
+  resolved_at                   DateTime?
+
+  event                         RecoveryEvent @relation(fields: [event_id], references: [event_id], onDelete: Cascade)
+
+  @@index([event_id])
+}
+
+model AuditLog {
+  log_id                        String    @id @default(cuid())
+  event_id                      String?
+  step_name                     String
+  actor                         String
+  reasoning                     String
+  policy_passed                 Boolean   @default(true)
+  model_version                 String?
+  metadata_json                 String?
+  timestamp                     DateTime  @default(now())
+
+  event                         RecoveryEvent? @relation(fields: [event_id], references: [event_id], onDelete: Cascade)
+
+  @@index([event_id])
+  @@index([timestamp(sort: Desc)])
+}
+
+model ModelInference {
+  inference_id                  String    @id @default(cuid())
+  event_id                      String
+  model_version                 String
+  p_recovery                    Float
+  features_json                 String?
+  inference_time_ms             Float?
+  created_at                    DateTime  @default(now())
+
+  event                         RecoveryEvent @relation(fields: [event_id], references: [event_id], onDelete: Cascade)
+
+  @@index([event_id])
+  @@index([model_version])
+}
+
+model SimulationRun {
+  simulation_id                 String    @id @default(cuid())
+  simulation_type               String    @default("BATCH")
+  batch_size                    Int
+  total_revenue_at_risk         Decimal   @db.Decimal(14, 2)
+  revenue_recovered             Decimal   @db.Decimal(14, 2)
+  recovery_rate_pct             Float
+  total_intervention_cost       Decimal   @db.Decimal(12, 2) @default(0.00)
+  events_automated              Int       @default(0)
+  events_escalated              Int       @default(0)
+  action_breakdown_json         String?
+  policy_params_json            String?
+  created_at                    DateTime  @default(now())
+}

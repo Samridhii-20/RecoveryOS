@@ -1,0 +1,15 @@
+{
+  "name": "recoveryos",
+  "version": "1.0.0",
+  "private": true,
+  "description": "RecoveryOS — AI Revenue Recovery Opportunity Engine",
+  "scripts": {
+    "dev": "concurrently -k -n \"BACKEND,FRONTEND\" -c \"blue.bold,cyan.bold\" \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend && source venv/bin/activate && python main.py",
+    "dev:frontend": "cd frontend && npm run dev",
+    "seed": "curl -X POST http://localhost:8000/api/v1/seed"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
