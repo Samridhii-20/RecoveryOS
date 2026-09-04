@@ -190,18 +190,6 @@ Actual metrics from the trained model (not fabricated):
 
 ---
 
-## 5-Minute Demo Flow
-
-1. **Dashboard Overview**: Revenue at Risk, Recoverable ERV, Recovered Revenue, ROI
-2. **Prioritized Queue**: Opportunities ranked by Opportunity Score (not just amount)
-3. **Single Event Execution**: Click opportunity → see ML probability, AI reasoning, guardrail check → Execute Intervention → Simulate Payment → Watch KPIs update
-4. **Human Escalation**: Click a ₹50,000+ event → see guardrails block automation → appears in Escalation Desk
-5. **Strategy Lab**: Adjust confidence threshold, escalation threshold → see projected revenue impact
-6. **Model Evaluation**: View ROC-AUC, calibration curve, probability distribution
-7. **Audit Trail**: Full decision trace — prediction → recommendation → guardrail → execution → outcome
-
----
-
 ## License
 
 Built for the Razorpay Buildathon. Not for production use.
