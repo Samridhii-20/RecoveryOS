@@ -6,6 +6,8 @@ import {
   BarChart3, Brain, Settings, Sparkles
 } from 'lucide-react';
 
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('opportunities');
   const [kpis, setKpis] = useState(null);
@@ -88,7 +90,7 @@ export default function App() {
   const fetchDashboardData = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/v1/analytics/dashboard');
+      const res = await fetch(`${API_BASE}/api/v1/analytics/dashboard`);
       const data = await res.json();
       setKpis(data);
       setLoading(false);
@@ -100,7 +102,7 @@ export default function App() {
 
   const fetchOpportunities = async (targetPage = page, targetPageSize = pageSize) => {
     try {
-      let url = `/api/v1/opportunities?page=${targetPage}&page_size=${targetPageSize}`;
+      let url = `${API_BASE}/api/v1/opportunities?page=${targetPage}&page_size=${targetPageSize}`;
       if (riskFilter !== 'ALL') url += `&risk_level=${riskFilter}`;
       if (statusFilter !== 'ALL') url += `&status=${statusFilter}`;
       if (activeTab === 'escalations') url += '&status=ESCALATED';
@@ -122,7 +124,7 @@ export default function App() {
   const fetchAuditLogs = async () => {
     try {
       setAuditLoading(true);
-      const res = await fetch('/api/v1/audit-trail?limit=100');
+      const res = await fetch(`${API_BASE}/api/v1/audit-trail?limit=100`);
       const data = await res.json();
       setAuditLogs(Array.isArray(data) ? data : []);
       setAuditLoading(false);
@@ -134,7 +136,7 @@ export default function App() {
 
   const fetchMlEvaluation = async () => {
     try {
-      const res = await fetch('/api/v1/ml/evaluation');
+      const res = await fetch(`${API_BASE}/api/v1/ml/evaluation`);
       const data = await res.json();
       setMlEvaluation(data);
     } catch (err) {
@@ -146,7 +148,7 @@ export default function App() {
     setSelectedEventId(eventId);
     setDetailLoading(true);
     try {
-      const res = await fetch(`/api/v1/opportunities/${eventId}`);
+      const res = await fetch(`${API_BASE}/api/v1/opportunities/${eventId}`);
       const data = await res.json();
       setEventDetail(data);
       setDetailLoading(false);
@@ -160,7 +162,7 @@ export default function App() {
     if (!selectedEventId) return;
     setActionExecuting(true);
     try {
-      const res = await fetch(`/api/v1/opportunities/${selectedEventId}/execute`, {
+      const res = await fetch(`${API_BASE}/api/v1/opportunities/${selectedEventId}/execute`, {
         method: 'POST'
       });
       const data = await res.json();
@@ -178,7 +180,7 @@ export default function App() {
     if (!selectedEventId) return;
     setSimulatingPay(true);
     try {
-      await fetch(`/api/v1/opportunities/${selectedEventId}/simulate-customer-pay`, {
+      await fetch(`${API_BASE}/api/v1/opportunities/${selectedEventId}/simulate-customer-pay`, {
         method: 'POST'
       });
       await openEventDetail(selectedEventId);
@@ -194,7 +196,7 @@ export default function App() {
   const handleReSeed = async () => {
     setIsResetting(true);
     try {
-      const res = await fetch('/api/v1/seed', { method: 'POST' });
+      const res = await fetch(`${API_BASE}/api/v1/seed`, { method: 'POST' });
       if (!res.ok) throw new Error(`Seed failed with status ${res.status}`);
       await fetchDashboardData();
       await fetchOpportunities(1, pageSize);
@@ -237,7 +239,7 @@ export default function App() {
         budget_increase_pct: simParams.budgetIncrease,
       });
 
-      const res = await fetch(`/api/v1/simulation/run?${params}`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/api/v1/simulation/run?${params}`, { method: 'POST' });
       const data = await res.json();
       setBatchSimResult(data);
       await fetchDashboardData();
@@ -261,7 +263,7 @@ export default function App() {
         max_discount_pct: simParams.maxDiscountPct,
         budget_increase_pct: simParams.budgetIncrease,
       });
-      const res = await fetch(`/api/v1/strategy/apply?${params}`, {
+      const res = await fetch(`${API_BASE}/api/v1/strategy/apply?${params}`, {
         method: 'POST',
       });
       const data = await res.json();
@@ -361,7 +363,7 @@ export default function App() {
         max_discount_pct: simParams.maxDiscountPct,
         budget_increase_pct: simParams.budgetIncrease,
       });
-      const res = await fetch(`/api/v1/simulation/what-if?${params}`, {
+      const res = await fetch(`${API_BASE}/api/v1/simulation/what-if?${params}`, {
         method: 'POST',
       });
       const data = await res.json();
