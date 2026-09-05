@@ -11,6 +11,7 @@ import re
 import math
 import logging
 import asyncio
+import uuid
 from decimal import Decimal
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
@@ -455,6 +456,20 @@ class Database:
         conn = self._get_connection()
         try:
             clean_data = {k: v for k, v in data.items() if v is not None}
+            id_field_map = {
+                "SimulationRun": "simulation_id",
+                "AuditLog": "log_id",
+                "Intervention": "intervention_id",
+                "RecoveryScore": "score_id",
+                "ModelInference": "inference_id",
+                "RecoveryEvent": "event_id",
+                "Customer": "customer_id",
+                "Merchant": "merchant_id",
+            }
+            id_field = id_field_map.get(table_name)
+            if id_field and (id_field not in clean_data or not clean_data[id_field]):
+                clean_data[id_field] = f"{table_name[:4].lower()}_{uuid.uuid4().hex[:16]}"
+
             columns = list(clean_data.keys())
             cols_sql = ", ".join([f'"{c}"' for c in columns])
             placeholders = ", ".join([f"%({c})s" for c in columns])
@@ -492,7 +507,28 @@ class Database:
             return 0
         conn = self._get_connection()
         try:
-            columns = list(data[0].keys())
+            id_field_map = {
+                "SimulationRun": "simulation_id",
+                "AuditLog": "log_id",
+                "Intervention": "intervention_id",
+                "RecoveryScore": "score_id",
+                "ModelInference": "inference_id",
+                "RecoveryEvent": "event_id",
+                "Customer": "customer_id",
+                "Merchant": "merchant_id",
+            }
+            id_field = id_field_map.get(table_name)
+
+            # Auto-assign IDs and collect union of all keys across rows
+            all_keys = set()
+            for row in data:
+                if id_field and (id_field not in row or not row[id_field]):
+                    row[id_field] = f"{table_name[:4].lower()}_{uuid.uuid4().hex[:16]}"
+                all_keys.update(row.keys())
+
+            columns = list(all_keys)
+            normalized_data = [{c: r.get(c, None) for c in columns} for r in data]
+
             cols_sql = ", ".join([f'"{c}"' for c in columns])
             placeholders = ", ".join([f"%({c})s" for c in columns])
 
@@ -501,7 +537,7 @@ class Database:
 
             from psycopg2.extras import execute_batch
             with conn.cursor() as cur:
-                execute_batch(cur, sql, data, page_size=200)
+                execute_batch(cur, sql, normalized_data, page_size=200)
                 conn.commit()
                 return len(data)
         except Exception:

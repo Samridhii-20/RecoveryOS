@@ -409,11 +409,20 @@ class MLEngine:
         return round(float(prob), 4)
     
     def get_evaluation_report(self) -> Dict[str, Any]:
-        """Load and return the saved evaluation report."""
+        """Load and return the saved evaluation report. If not on disk, generates it on the fly."""
         if os.path.exists(self.eval_path):
-            with open(self.eval_path, "r") as f:
-                return json.load(f)
-        return {"error": "No evaluation report found. Run seed to train the model."}
+            try:
+                with open(self.eval_path, "r") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+
+        # Auto-train and generate if file is missing (e.g. in new cloud deployment)
+        try:
+            df = SyntheticDataGenerator.generate_events(count=2000, seed=42)
+            return self.train_and_evaluate(df)
+        except Exception as e:
+            return {"error": f"Failed to generate evaluation report: {str(e)}"}
 
 
 # ---------------------------------------------------------

@@ -17,7 +17,9 @@ venv/
 *.whl
 
 # ----- Data & ML Artifacts (generated at runtime) -----
-data/
+data/*
+!data/evaluation_report.json
+!data/recovery_model.joblib
 
 # ----- Node / Frontend -----
 node_modules/
