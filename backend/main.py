@@ -491,19 +491,77 @@ Explain WHY this intervention is recommended and what factors drive the predicti
 # FASTAPI APPLICATION SETUP
 # ---------------------------------------------------------
 
+def setup_prisma_binary():
+    """Ensure Prisma query engine binary is located and PRISMA_QUERY_ENGINE_BINARY is explicitly exported."""
+    import glob
+    import shutil
+    from pathlib import Path
+
+    def find_engine_binaries():
+        candidates = []
+        search_dirs = [
+            os.path.expanduser("~/.cache/prisma-python"),
+            "/opt/render/.cache/prisma-python",
+            "/opt/render/project/src/.cache/prisma-python",
+            str(Path.cwd().parent),
+            str(Path.cwd()),
+        ]
+        for sdir in search_dirs:
+            if os.path.exists(sdir):
+                for f in glob.glob(os.path.join(sdir, "**/*query-engine*"), recursive=True):
+                    if not f.endswith((".js", ".d.ts", ".json", ".md", ".map", ".txt", ".ts")):
+                        candidates.append(f)
+        return candidates
+
+    found = find_engine_binaries()
+    if not found:
+        logger.info("Prisma query engine binary not found. Running prisma py fetch...")
+        try:
+            subprocess.run([sys.executable, "-m", "prisma", "py", "fetch"], check=True)
+        except Exception as fetch_err:
+            logger.warning(f"prisma py fetch returned: {fetch_err}")
+        found = find_engine_binaries()
+
+    if found:
+        binary_path = found[0]
+        try:
+            os.chmod(binary_path, 0o755)
+        except Exception:
+            pass
+        os.environ["PRISMA_QUERY_ENGINE_BINARY"] = binary_path
+        logger.info(f"Configured PRISMA_QUERY_ENGINE_BINARY = {binary_path}")
+
+        # Also place into working directory with both naming variants to satisfy any fallback search
+        cwd = Path.cwd()
+        for target_name in [
+            os.path.basename(binary_path),
+            f"prisma-{os.path.basename(binary_path)}",
+            "prisma-query-engine-debian-openssl-3.0.x",
+            "query-engine-debian-openssl-3.0.x",
+        ]:
+            target_file = cwd / target_name
+            if not target_file.exists():
+                try:
+                    shutil.copy2(binary_path, target_file)
+                    os.chmod(target_file, 0o755)
+                except Exception:
+                    pass
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifecycle: connect to Neon PostgreSQL on startup, disconnect on shutdown."""
+    setup_prisma_binary()
     try:
         await prisma.connect()
     except Exception as err:
-        logger.warning(f"Initial Prisma connect failed: {err}. Attempting dynamic engine binary fetch...")
+        logger.warning(f"Initial Prisma connect failed: {err}. Retrying engine setup...")
         try:
             subprocess.run([sys.executable, "-m", "prisma", "py", "fetch"], check=True)
+            setup_prisma_binary()
             await prisma.connect()
-            logger.info("Successfully fetched Prisma binaries and established database connection.")
+            logger.info("Successfully resolved Prisma binaries and established database connection.")
         except Exception as retry_err:
-            logger.error(f"Failed to connect to Prisma after binary fetch: {retry_err}")
+            logger.error(f"Failed to connect to Prisma: {retry_err}")
             raise retry_err
 
     logger.info("Connected to Neon PostgreSQL via Prisma")
