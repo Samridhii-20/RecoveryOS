@@ -13,11 +13,13 @@ Architecture:
 """
 
 import os
+import sys
 import json
 import time
 import math
 import uuid
 import logging
+import subprocess
 import numpy as np
 from decimal import Decimal
 from datetime import datetime, timedelta
@@ -492,7 +494,18 @@ Explain WHY this intervention is recommended and what factors drive the predicti
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifecycle: connect to Neon PostgreSQL on startup, disconnect on shutdown."""
-    await prisma.connect()
+    try:
+        await prisma.connect()
+    except Exception as err:
+        logger.warning(f"Initial Prisma connect failed: {err}. Attempting dynamic engine binary fetch...")
+        try:
+            subprocess.run([sys.executable, "-m", "prisma", "py", "fetch"], check=True)
+            await prisma.connect()
+            logger.info("Successfully fetched Prisma binaries and established database connection.")
+        except Exception as retry_err:
+            logger.error(f"Failed to connect to Prisma after binary fetch: {retry_err}")
+            raise retry_err
+
     logger.info("Connected to Neon PostgreSQL via Prisma")
     
     # Auto-seed if empty
